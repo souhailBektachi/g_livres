@@ -11,27 +11,45 @@ class SearchScreen extends StatefulWidget {
   State<SearchScreen> createState() => _SearchScreenState();
 }
 
-class _SearchScreenState extends State<SearchScreen> {
+class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderStateMixin {
   final TextEditingController _searchController = TextEditingController();
   final ApiService _apiService = ApiService();
   final DatabaseService _dbService = DatabaseService();
+  late AnimationController _animationController;
   
   List<Book> _searchResults = [];
   bool _isLoading = false;
   String _errorMessage = '';
   
+  // Debounce mechanism for search
+  Future<void>? _debounce;
+  
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 450),
+    );
+  }
+  
   @override
   void dispose() {
     _searchController.dispose();
+    _animationController.dispose();
     super.dispose();
   }
   
-  // Method to perform book search
+  // Method to perform book search with debounce
   Future<void> _searchBooks(String query) async {
+    // Cancel previous debounce if it exists
+    _debounce?.ignore();
+    
     if (query.trim().isEmpty) {
       setState(() {
         _searchResults = [];
         _errorMessage = '';
+        _isLoading = false;
       });
       return;
     }
@@ -41,19 +59,30 @@ class _SearchScreenState extends State<SearchScreen> {
       _errorMessage = '';
     });
     
-    try {
-      final results = await _apiService.searchBooks(query);
-      setState(() {
-        _searchResults = results;
-        _isLoading = false;
-      });
-    } catch (e) {
-      setState(() {
-        _searchResults = [];
-        _isLoading = false;
-        _errorMessage = 'Error searching books: ${e.toString()}';
-      });
-    }
+    // Create a new debounce
+    _debounce = Future.delayed(const Duration(milliseconds: 500), () async {
+      try {
+        _animationController.forward();
+        final results = await _apiService.searchBooks(query);
+        
+        if (mounted) {
+          setState(() {
+            _searchResults = results;
+            _isLoading = false;
+          });
+          _animationController.reverse();
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _searchResults = [];
+            _isLoading = false;
+            _errorMessage = 'Error searching books: ${e.toString()}';
+          });
+          _animationController.reverse();
+        }
+      }
+    });
   }
   
   // Check if a book is favorited
@@ -67,18 +96,191 @@ class _SearchScreenState extends State<SearchScreen> {
     
     if (isFavorite) {
       await _dbService.deleteBook(book.id);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${book.title} removed from favorites')),
-      );
+      _showSnackBar('${book.title} removed from favorites', isError: false);
     } else {
       await _dbService.insertBook(book);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${book.title} added to favorites')),
-      );
+      _showSnackBar('${book.title} added to favorites', isError: false);
     }
     
     // Refresh the UI
     setState(() {});
+  }
+  
+  // Show a snackbar with custom styling
+  void _showSnackBar(String message, {bool isError = false}) {
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error : Icons.check_circle,
+              color: Colors.white,
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(message),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: isError ? Colors.redAccent : Colors.green,
+        duration: const Duration(seconds: 2),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+        margin: const EdgeInsets.all(16),
+      ),
+    );
+  }
+  
+  // Show book details in a modal bottom sheet
+  void _showBookDetails(Book book) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.7,
+        minChildSize: 0.5,
+        maxChildSize: 0.9,
+        builder: (_, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Handle bar
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2.5),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  children: [
+                    // Book image and title row
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Book cover
+                        Hero(
+                          tag: 'book-${book.id}',
+                          child: Container(
+                            width: 100,
+                            height: 150,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(10),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.3),
+                                  spreadRadius: 2,
+                                  blurRadius: 5,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: book.imageUrl != null
+                                ? Image.network(
+                                    book.imageUrl!,
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) => Container(
+                                      color: Colors.grey[300],
+                                      child: const Icon(Icons.book, size: 50),
+                                    ),
+                                  )
+                                : Container(
+                                    color: Colors.grey[300],
+                                    child: const Icon(Icons.book, size: 50),
+                                  ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        
+                        // Book info
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                book.title,
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                book.authorNames,
+                                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: Colors.grey[700],
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              
+                              // Favorite button
+                              FutureBuilder<bool>(
+                                future: _isBookFavorited(book.id),
+                                builder: (context, snapshot) {
+                                  final isFavorited = snapshot.data ?? false;
+                                  return ElevatedButton.icon(
+                                    onPressed: () {
+                                      _toggleFavorite(book);
+                                      Navigator.pop(context);
+                                    },
+                                    icon: Icon(
+                                      isFavorited ? Icons.favorite : Icons.favorite_border,
+                                      color: isFavorited ? Colors.red : null,
+                                    ),
+                                    label: Text(isFavorited ? 'Remove from Favorites' : 'Add to Favorites'),
+                                    style: ElevatedButton.styleFrom(
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+                    
+                    // Description section
+                    Text(
+                      'Description',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      book.description ?? 'No description available.',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -86,19 +288,22 @@ class _SearchScreenState extends State<SearchScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Book Search'),
+        elevation: 2,
         actions: [
           IconButton(
             icon: const Icon(Icons.favorite),
             onPressed: () {
               Navigator.pushNamed(context, '/favorites');
             },
+            tooltip: 'View Favorites',
           ),
         ],
       ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(16.0),
+          // Animated search bar
+          Container(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
             child: TextField(
               controller: _searchController,
               decoration: InputDecoration(
@@ -106,19 +311,34 @@ class _SearchScreenState extends State<SearchScreen> {
                 hintText: 'Enter book title, author, or keywords',
                 prefixIcon: const Icon(Icons.search),
                 border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(color: Theme.of(context).colorScheme.primary),
                 ),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.clear),
-                  onPressed: () {
-                    _searchController.clear();
-                    setState(() {
-                      _searchResults = [];
-                    });
-                  },
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(
+                    color: Theme.of(context).colorScheme.primary,
+                    width: 2,
+                  ),
                 ),
+                suffixIcon: _searchController.text.isNotEmpty
+                  ? IconButton(
+                      icon: const Icon(Icons.clear),
+                      onPressed: () {
+                        _searchController.clear();
+                        setState(() {
+                          _searchResults = [];
+                        });
+                      },
+                    )
+                  : null,
+                filled: true,
+                fillColor: Theme.of(context).brightness == Brightness.dark
+                    ? Colors.grey[800]
+                    : Colors.grey[50],
               ),
-              onSubmitted: (value) => _searchBooks(value),
+              onChanged: _searchBooks,
+              textInputAction: TextInputAction.search,
             ),
           ),
           
@@ -134,27 +354,46 @@ class _SearchScreenState extends State<SearchScreen> {
           
           // Loading indicator
           if (_isLoading)
-            const Center(child: CircularProgressIndicator()),
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Center(
+                child: AnimatedBuilder(
+                  animation: _animationController,
+                  builder: (_, child) {
+                    return Transform.rotate(
+                      angle: _animationController.value * 2 * 3.14159,
+                      child: child,
+                    );
+                  },
+                  child: const CircularProgressIndicator(),
+                ),
+              ),
+            ),
             
           // Search results
           if (_searchResults.isNotEmpty)
             Expanded(
-              child: ListView.builder(
-                itemCount: _searchResults.length,
-                itemBuilder: (context, index) {
-                  final book = _searchResults[index];
-                  return FutureBuilder<bool>(
-                    future: _isBookFavorited(book.id),
-                    builder: (context, snapshot) {
-                      final isFavorited = snapshot.data ?? false;
-                      return BookListItem(
-                        book: book,
-                        isFavorited: isFavorited,
-                        onFavoriteTap: () => _toggleFavorite(book),
-                      );
-                    },
-                  );
-                },
+              child: AnimatedOpacity(
+                opacity: _isLoading ? 0.5 : 1.0,
+                duration: const Duration(milliseconds: 300),
+                child: ListView.builder(
+                  itemCount: _searchResults.length,
+                  itemBuilder: (context, index) {
+                    final book = _searchResults[index];
+                    return FutureBuilder<bool>(
+                      future: _isBookFavorited(book.id),
+                      builder: (context, snapshot) {
+                        final isFavorited = snapshot.data ?? false;
+                        return BookListItem(
+                          book: book,
+                          isFavorited: isFavorited,
+                          onFavoriteTap: () => _toggleFavorite(book),
+                          onTap: () => _showBookDetails(book),
+                        );
+                      },
+                    );
+                  },
+                ),
               ),
             ),
           
@@ -184,11 +423,11 @@ class _SearchScreenState extends State<SearchScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Icon(Icons.search, size: 80, color: Colors.grey),
+                    Icon(Icons.menu_book, size: 80, color: Colors.grey),
                     SizedBox(height: 16),
                     Text(
                       'Search for books',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                     ),
                     Text('Enter a search term to find books'),
                   ],

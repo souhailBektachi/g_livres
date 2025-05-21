@@ -35,6 +35,8 @@ class Book {
         volumeInfo['imageLinks'] != null &&
         volumeInfo['imageLinks'].containsKey('thumbnail')) {
       thumbnail = volumeInfo['imageLinks']['thumbnail'] as String;
+      // Ensure the image URL uses HTTPS instead of HTTP
+      thumbnail = thumbnail.replaceFirst('http://', 'https://');
     }
     
     return Book(
