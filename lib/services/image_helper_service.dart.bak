@@ -1,0 +1,247 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:cached_network_image/cached_network_image.dart';
+import 'error_reporting_service.dart';
+
+/// Helper service for handling image loading and cleaning URLs
+class ImageHelperService {
+  // Singleton instance
+  static final ImageHelperService _instance = ImageHelperService._internal();
+  factory ImageHelperService() => _instance;
+  ImageHelperService._internal();
+    /// Clean and fix a book cover image URL with specific handling for web platform
+  String? cleanImageUrl(String? url) {
+    if (url == null || url.isEmpty) return null;
+    
+    try {
+      String cleanedUrl = url;
+      
+      // Ensure HTTPS protocol for web compatibility
+      if (cleanedUrl.startsWith('http://')) {
+        cleanedUrl = cleanedUrl.replaceFirst('http://', 'https://');
+      }
+      
+      // For the web platform, simplify URLs to avoid cross-origin issues
+      if (kIsWeb) {
+        // Remove all query parameters which can cause issues in some browsers
+        final uri = Uri.parse(cleanedUrl);
+        cleanedUrl = Uri(
+          scheme: uri.scheme,
+          host: uri.host,
+          path: uri.path,
+        ).toString();
+        
+        // Special handling for Google Books API images on web
+        if (cleanedUrl.contains('books.google.com')) {
+          // For Google Books API, keep only the essential path
+          cleanedUrl = cleanedUrl.split('?').first;
+        }
+        
+        return cleanedUrl;
+      }
+      
+      // Non-web platform can handle more complex URLs
+      // Remove parameters that might cause decoding issues
+      if (cleanedUrl.contains('&edge=curl')) {
+        cleanedUrl = cleanedUrl.replaceAll('&edge=curl', '');
+      }
+      
+      // Handle the zoom parameter
+      if (cleanedUrl.contains('zoom=')) {
+        cleanedUrl = cleanedUrl.replaceAll(RegExp(r'zoom=\d+'), 'zoom=1');
+      }
+      
+      // Fix specific Google Books API issues
+      if (cleanedUrl.contains('&img=1')) {
+        cleanedUrl = cleanedUrl.replaceAll('&img=1', '');
+      }
+      
+      // Ensure the URL doesn't have any unencoded characters
+      final uri = Uri.parse(cleanedUrl);
+      
+      // Create a properly encoded URL with all components
+      final cleanUri = Uri(
+        scheme: uri.scheme,
+        host: uri.host,
+        path: uri.path,
+        queryParameters: uri.queryParameters,
+      );
+      
+      return cleanUri.toString();
+    } catch (e) {
+      // If any error occurs during cleaning, try a simpler approach
+      try {
+        // Just encode the URL without parsing
+        return Uri.encodeFull(url);
+      } catch (e) {
+        // If all fails, return null
+        ErrorReportingService().reportImageError(url!, e);
+        return null;
+      }
+    }
+  }
+  /// Get a fallback URL for a book cover using OpenLibrary or a CORS-friendly alternative
+  String? getFallbackUrl(String id) {
+    if (id.isEmpty) return null;
+    
+    // For web platform, use a CORS-friendly placeholder service
+    if (kIsWeb) {
+      return getWebSafePlaceholder(id);
+    }
+    
+    // For native platforms, use OpenLibrary
+    return 'https://covers.openlibrary.org/b/isbn/$id-M.jpg';
+  }
+  
+  /// Widget for loading a book cover with caching and error handling
+  Widget buildCachedCover(
+    BuildContext context, 
+    String? url, 
+    String bookId, {
+    double width = 80, 
+    double height = 120,
+    Widget? placeholder,
+    Widget? errorWidget,
+    bool useHero = true,
+  }) {
+    // Use the cleaned URL or return placeholder
+    final cleanUrl = cleanImageUrl(url);
+    if (cleanUrl == null) {
+      return errorWidget ?? _defaultPlaceholder(context, width, height);
+    }
+    
+    // Special handling for web platform
+    if (kIsWeb) {
+      // For web, use a simpler image loading approach with built-in Image.network
+      // This avoids some CORS and caching issues specific to web platforms
+      Widget imageWidget = Image.network(
+        cleanUrl,
+        width: width,
+        height: height,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) {
+          ErrorReportingService().reportImageError(cleanUrl, error);
+          
+          // Try fallback URL on error
+          final fallbackUrl = getFallbackUrl(bookId);
+          if (fallbackUrl != null && fallbackUrl != cleanUrl) {
+            return Image.network(
+              fallbackUrl,
+              width: width,
+              height: height,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => 
+                errorWidget ?? _defaultPlaceholder(context, width, height),
+            );
+          }
+          
+          return errorWidget ?? _defaultPlaceholder(context, width, height);
+        },
+        loadingBuilder: (context, child, progress) {
+          if (progress == null) return child;
+          return placeholder ?? _defaultPlaceholder(context, width, height, showLoader: true);
+        },
+      );
+      
+      return useHero ? Hero(tag: 'book-$bookId', child: imageWidget) : imageWidget;
+    }
+    
+    // For non-web platforms, use CachedNetworkImage for better performance
+    Widget imageWidget = CachedNetworkImage(
+      imageUrl: cleanUrl,
+      width: width,
+      height: height,
+      fit: BoxFit.cover,
+      fadeInDuration: const Duration(milliseconds: 300),
+      cacheKey: 'book_${bookId}_cover',
+      maxHeightDiskCache: height.toInt() * 2,
+      maxWidthDiskCache: width.toInt() * 2,
+      memCacheHeight: height.toInt() * 2,
+      memCacheWidth: width.toInt() * 2,
+      useOldImageOnUrlChange: true,
+      errorListener: (error) {
+        ErrorReportingService().reportImageError(cleanUrl, error);
+      },
+      placeholder: (context, url) => placeholder ?? 
+        _defaultPlaceholder(context, width, height, showLoader: true),
+      errorWidget: (context, url, error) {
+        ErrorReportingService().reportImageError(cleanUrl, error);
+        
+        // Try fallback URL for errors
+        final fallbackUrl = getFallbackUrl(bookId);
+        if (fallbackUrl != null && fallbackUrl != cleanUrl) {
+          return CachedNetworkImage(
+            imageUrl: fallbackUrl,
+            width: width,
+            height: height,
+            fit: BoxFit.cover,
+            placeholder: (context, url) => 
+              _defaultPlaceholder(context, width, height, showLoader: true),
+            errorWidget: (context, url, error) => 
+              errorWidget ?? _defaultPlaceholder(context, width, height),
+          );
+        }
+        
+        return errorWidget ?? _defaultPlaceholder(context, width, height);
+      },
+    );
+    
+    return useHero ? Hero(tag: 'book-$bookId', child: imageWidget) : imageWidget;
+  }
+  
+  /// Get a web-safe placeholder image URL based on a book ID
+  String getWebSafePlaceholder(String bookId) {
+    // Create a deterministic placeholder based on the book ID
+    // This ensures the same book always gets the same placeholder
+    final colorSeed = bookId.hashCode % 100;
+    return 'https://picsum.photos/seed/$colorSeed/200/300';
+  }
+  
+  /// Default placeholder widget for book covers
+  Widget _defaultPlaceholder(
+    BuildContext context, 
+    double width, 
+    double height, 
+    {bool showLoader = false}
+  ) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Center(
+        child: showLoader
+            ? SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                    Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              )
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.book,
+                    size: 32,
+                    color: Theme.of(context).colorScheme.primary.withOpacity(0.7),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'No cover',
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+}
