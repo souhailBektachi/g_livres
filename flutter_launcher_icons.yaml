@@ -1,0 +1,17 @@
+{
+  "flutter_icons": {
+    "android": "launcher_icon",
+    "ios": true,
+    "image_path": "assets/icon/app_icon.png",
+    "adaptive_icon_background": "#FFFFFF",
+    "adaptive_icon_foreground": "assets/icon/app_icon_foreground.png",
+    "min_sdk_android": 21,
+    "remove_alpha_ios": true,
+    "web": {
+      "generate": true,
+      "image_path": "assets/icon/app_icon.png",
+      "background_color": "#FFFFFF",
+      "theme_color": "#2196F3"
+    }
+  }
+}

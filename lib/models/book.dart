@@ -1,6 +1,8 @@
 // Book model class to represent a book
 // This model handles JSON serialization/deserialization and SQLite mapping
 
+import 'package:g_livres/services/image_helper_service.dart';
+
 class Book {
   // Properties to store book details
   final String id;
