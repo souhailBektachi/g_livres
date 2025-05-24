@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:cached_network_image/cached_network_image.dart';
 import '../models/book.dart';
 import '../services/api_service.dart';
 import '../services/db_service.dart';
+import '../services/image_helper_service.dart';
 import '../widgets/book_list_item.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -14,7 +17,7 @@ class SearchScreen extends StatefulWidget {
 class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderStateMixin {
   final TextEditingController _searchController = TextEditingController();
   final ApiService _apiService = ApiService();
-  final DatabaseService _dbService = DatabaseService();
+  final ImageHelperService _imageHelper = ImageHelperService(); // Use ImageHelperService instead
   late AnimationController _animationController;
   
   List<Book> _searchResults = [];
@@ -85,25 +88,65 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
     });
   }
   
-  // Check if a book is favorited
+  // Check if a book is favorited using ImageHelperService
   Future<bool> _isBookFavorited(String bookId) async {
-    return await _dbService.isBookFavorite(bookId);
+    if (kIsWeb) {
+      return await _imageHelper.isFavorite(bookId);
+    } else {
+      // For mobile, still use DatabaseService
+      final dbService = DatabaseService();
+      return await dbService.isBookFavorite(bookId);
+    }
   }
   
-  // Toggle favorite status of a book
+  // Toggle favorite status using ImageHelperService for web
   Future<void> _toggleFavorite(Book book) async {
-    final isFavorite = await _dbService.isBookFavorite(book.id);
-    
-    if (isFavorite) {
-      await _dbService.deleteBook(book.id);
-      _showSnackBar('${book.title} removed from favorites', isError: false);
-    } else {
-      await _dbService.insertBook(book);
-      _showSnackBar('${book.title} added to favorites', isError: false);
+    try {
+      bool success = false;
+      bool wasFavorite = false;
+      
+      if (kIsWeb) {
+        wasFavorite = await _imageHelper.isFavorite(book.id);
+        if (wasFavorite) {
+          success = await _imageHelper.removeFromFavorites(book.id);
+        } else {
+          // Pass complete book data for web storage
+          final bookData = {
+            'id': book.id,
+            'title': book.title,
+            'authors': book.authors.join(','),
+            'imageUrl': book.imageUrl ?? '',
+            'description': book.description ?? '',
+          };
+          success = await _imageHelper.addToFavorites(book.id, bookData: bookData);
+        }
+      } else {
+        // For mobile, use DatabaseService
+        final dbService = DatabaseService();
+        wasFavorite = await dbService.isBookFavorite(book.id);
+        if (wasFavorite) {
+          await dbService.deleteBook(book.id);
+          success = true;
+        } else {
+          await dbService.insertBook(book);
+          success = true;
+        }
+      }
+      
+      if (success) {
+        final message = wasFavorite 
+            ? '${book.title} removed from favorites'
+            : '${book.title} added to favorites';
+        _showSnackBar(message, isError: false);
+        
+        // Refresh the UI
+        setState(() {});
+      } else {
+        _showSnackBar('Failed to update favorites', isError: true);
+      }
+    } catch (e) {
+      _showSnackBar('Error updating favorites: ${e.toString()}', isError: true);
     }
-    
-    // Refresh the UI
-    setState(() {});
   }
   
   // Show a snackbar with custom styling
@@ -189,22 +232,9 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
                                   offset: const Offset(0, 3),
                                 ),
                               ],
-                            ),
-                            child: ClipRRect(
+                            ),                            child: ClipRRect(
                               borderRadius: BorderRadius.circular(10),
-                              child: book.imageUrl != null
-                                ? Image.network(
-                                    book.imageUrl!,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => Container(
-                                      color: Colors.grey[300],
-                                      child: const Icon(Icons.book, size: 50),
-                                    ),
-                                  )
-                                : Container(
-                                    color: Colors.grey[300],
-                                    child: const Icon(Icons.book, size: 50),
-                                  ),
+                              child: _buildBookCover(book),
                             ),
                           ),
                         ),
@@ -434,8 +464,54 @@ class _SearchScreenState extends State<SearchScreen> with SingleTickerProviderSt
                 ),
               ),
             ),
-        ],
+        ],      ),
+    );
+  }
+
+  Widget _buildBookCover(Book book) {
+    final imageHelper = ImageHelperService();
+    final cleanUrl = imageHelper.cleanImageUrl(book.imageUrl);
+    
+    if (cleanUrl == null || cleanUrl.isEmpty) {
+      return Container(
+        color: Colors.grey[300],
+        child: const Icon(Icons.book, size: 50),
+      );
+    }
+    
+    return CachedNetworkImage(
+      imageUrl: cleanUrl,
+      fit: BoxFit.cover,
+      placeholder: (context, url) => Container(
+        color: Colors.grey[200],
+        child: const Center(
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
       ),
+      errorWidget: (context, url, error) {
+        // Try fallback URL
+        final fallbackUrl = imageHelper.getFallbackUrl(book.id);
+        if (fallbackUrl != null && fallbackUrl != url) {
+          return CachedNetworkImage(
+            imageUrl: fallbackUrl,
+            fit: BoxFit.cover,
+            placeholder: (context, url) => Container(
+              color: Colors.grey[200],
+              child: const Center(
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+            errorWidget: (context, url, error) => Container(
+              color: Colors.grey[300],
+              child: const Icon(Icons.book, size: 50),
+            ),
+          );
+        }
+        return Container(
+          color: Colors.grey[300],
+          child: const Icon(Icons.book, size: 50),
+        );
+      },
     );
   }
 }

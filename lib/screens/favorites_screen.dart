@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
+import 'package:cached_network_image/cached_network_image.dart';
 import '../models/book.dart';
 import '../services/db_service.dart';
+import '../services/image_helper_service.dart';
 import '../widgets/book_list_item.dart';
 
 class FavoritesScreen extends StatefulWidget {
@@ -11,42 +14,121 @@ class FavoritesScreen extends StatefulWidget {
 }
 
 class _FavoritesScreenState extends State<FavoritesScreen> {
-  final DatabaseService _dbService = DatabaseService();
+  final ImageHelperService _imageHelper = ImageHelperService();
   List<Book> _favoriteBooks = [];
   bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
+  }
+  
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
     _loadFavoriteBooks();
   }
 
-  // Load favorite books from the database
+  // Load favorite books - unified approach for both web and mobile
   Future<void> _loadFavoriteBooks() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
-      final books = await _dbService.getBooks();
-      setState(() {
-        _favoriteBooks = books;
-        _isLoading = false;
-      });
+      if (kIsWeb) {
+        // For web, get complete book data from shared preferences
+        final favoriteData = await _imageHelper.getFavoriteBooks();
+        final books = favoriteData.map<Book?>((data) {
+          try {
+            // Safely extract authors
+            List<String> authors = [];
+            final authorsData = data['authors'];
+            if (authorsData is String && authorsData.isNotEmpty) {
+              authors = authorsData.split(',')
+                  .map((e) => e.trim())
+                  .where((e) => e.isNotEmpty)
+                  .toList();
+            } else if (authorsData is List) {
+              authors = authorsData
+                  .map((e) => e.toString().trim())
+                  .where((e) => e.isNotEmpty)
+                  .toList();
+            }
+            
+            // Create Book object with safe data extraction
+            return Book(
+              id: (data['id'] ?? '').toString(),
+              title: (data['title'] ?? 'Unknown Title').toString(),
+              authors: authors,
+              imageUrl: data['imageUrl']?.toString().isNotEmpty == true ? data['imageUrl'].toString() : null,
+              description: data['description']?.toString().isNotEmpty == true ? data['description'].toString() : null,
+            );
+          } catch (e) {
+            if (kDebugMode) {
+              print('Error parsing book data: $e, data: $data');
+            }
+            return null;
+          }
+        }).where((book) => book != null).cast<Book>().toList();
+        
+        setState(() {
+          _favoriteBooks = books;
+          _isLoading = false;
+        });
+      } else {
+        // For mobile, use DatabaseService
+        final dbService = DatabaseService();
+        if (!dbService.isAvailable) {
+          setState(() {
+            _favoriteBooks = [];
+            _isLoading = false;
+          });
+          _showErrorSnackBar('Favorites are not available on this platform');
+          return;
+        }
+
+        final books = await dbService.getBooks();
+        setState(() {
+          _favoriteBooks = books;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
+      if (kDebugMode) {
+        print('Error loading favorites: $e');
+      }
       setState(() {
+        _favoriteBooks = [];
         _isLoading = false;
       });
       _showErrorSnackBar('Error loading favorites: ${e.toString()}');
     }
   }
 
-  // Remove book from favorites
+  // Remove book from favorites - unified approach
   Future<void> _removeFromFavorites(Book book) async {
     try {
-      await _dbService.deleteBook(book.id);
-      _showSnackBar('${book.title} removed from favorites');
-      _loadFavoriteBooks(); // Refresh the list
+      bool success = false;
+      
+      if (kIsWeb) {
+        success = await _imageHelper.removeFromFavorites(book.id);
+      } else {
+        final dbService = DatabaseService();
+        if (!dbService.isAvailable) {
+          _showErrorSnackBar('Favorites are not available on this platform');
+          return;
+        }
+        await dbService.deleteBook(book.id);
+        success = true;
+      }
+      
+      if (success) {
+        _showSnackBar('${book.title} removed from favorites');
+        _loadFavoriteBooks(); // Refresh the list
+      } else {
+        _showErrorSnackBar('Failed to remove from favorites');
+      }
     } catch (e) {
       _showErrorSnackBar('Error removing book: ${e.toString()}');
     }
@@ -116,118 +198,76 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
-          : _favoriteBooks.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.favorite_border,
-                        size: 80,
-                        color: Colors.grey[400],
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'No favorite books yet',
-                        style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Books you save will appear here',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Colors.grey[600],
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      ElevatedButton.icon(
-                        onPressed: () => Navigator.of(context).pop(),
-                        icon: const Icon(Icons.search),
-                        label: const Text('Search for Books'),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                )
-              : AnimatedList(
-                  initialItemCount: _favoriteBooks.length,
-                  itemBuilder: (context, index, animation) {
-                    final book = _favoriteBooks[index];
-                    return SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(1, 0),
-                        end: Offset.zero,
-                      ).animate(CurvedAnimation(
-                        parent: animation,
-                        curve: Curves.easeOutQuint,
-                      )),
-                      child: FadeTransition(
-                        opacity: animation,
-                        child: Dismissible(
-                          key: Key(book.id),
-                          direction: DismissDirection.endToStart,
-                          background: Container(
-                            alignment: Alignment.centerRight,
-                            padding: const EdgeInsets.only(right: 20),
-                            color: Colors.redAccent,
-                            child: const Icon(
-                              Icons.delete,
-                              color: Colors.white,
-                              size: 30,
-                            ),
-                          ),
-                          confirmDismiss: (direction) async {
-                            return await showDialog(
-                              context: context,
-                              builder: (BuildContext context) {
-                                return AlertDialog(
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(16),
-                                  ),
-                                  title: const Text("Remove from Favorites"),
-                                  content: Text(
-                                      "Are you sure you want to remove '${book.title}' from your favorites?"),
-                                  actions: <Widget>[
-                                    TextButton(
-                                      onPressed: () => Navigator.of(context).pop(false),
-                                      child: const Text("Cancel"),
-                                    ),
-                                    TextButton(
-                                      onPressed: () => Navigator.of(context).pop(true),
-                                      child: const Text(
-                                        "Remove",
-                                        style: TextStyle(color: Colors.red),
-                                      ),
-                                    ),
-                                  ],
-                                );
-                              },
-                            );
-                          },
-                          onDismissed: (direction) {
-                            _removeFromFavorites(book);
-                          },
-                          child: BookListItem(
-                            book: book,
-                            isFavorited: true,
-                            onFavoriteTap: () => _removeFromFavorites(book),
-                            onTap: () => _showBookDetails(context, book),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
+          : _buildBody(),
     );
   }
   
+  Widget _buildBody() {
+    // Unified approach - always show book list with images and names
+    if (_favoriteBooks.isEmpty) {
+      return _buildEmptyState();
+    }
+    
+    return RefreshIndicator(
+      onRefresh: _loadFavoriteBooks,
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        itemCount: _favoriteBooks.length,
+        itemBuilder: (context, index) {
+          final book = _favoriteBooks[index];
+          return BookListItem(
+            book: book,
+            isFavorited: true,
+            onFavoriteTap: () => _removeFromFavorites(book),
+            onTap: () => _showBookDetails(context, book),
+          );
+        },
+      ),
+    );
+  }
+  
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.favorite_border,
+            size: 80,
+            color: Colors.grey[400],
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'No favorite books yet',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Books you save will appear here',
+            style: TextStyle(
+              fontSize: 16,
+              color: Colors.grey[600],
+            ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.search),
+            label: const Text('Search for Books'),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   // Show book details in a modal bottom sheet
   void _showBookDetails(BuildContext context, Book book) {
     showModalBottomSheet(
@@ -283,22 +323,9 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
                                   offset: const Offset(0, 3),
                                 ),
                               ],
-                            ),
-                            child: ClipRRect(
+                            ),                            child: ClipRRect(
                               borderRadius: BorderRadius.circular(10),
-                              child: book.imageUrl != null
-                                ? Image.network(
-                                    book.imageUrl!,
-                                    fit: BoxFit.cover,
-                                    errorBuilder: (_, __, ___) => Container(
-                                      color: Colors.grey[300],
-                                      child: const Icon(Icons.book, size: 50),
-                                    ),
-                                  )
-                                : Container(
-                                    color: Colors.grey[300],
-                                    child: const Icon(Icons.book, size: 50),
-                                  ),
+                              child: _buildBookCover(book),
                             ),
                           ),
                         ),
@@ -361,8 +388,54 @@ class _FavoritesScreenState extends State<FavoritesScreen> {
               ),
             ],
           ),
+        ),      ),
+    );
+  }
+
+  Widget _buildBookCover(Book book) {
+    final imageHelper = ImageHelperService();
+    final cleanUrl = imageHelper.cleanImageUrl(book.imageUrl);
+    
+    if (cleanUrl == null || cleanUrl.isEmpty) {
+      return Container(
+        color: Colors.grey[300],
+        child: const Icon(Icons.book, size: 50),
+      );
+    }
+    
+    return CachedNetworkImage(
+      imageUrl: cleanUrl,
+      fit: BoxFit.cover,
+      placeholder: (context, url) => Container(
+        color: Colors.grey[200],
+        child: const Center(
+          child: CircularProgressIndicator(strokeWidth: 2),
         ),
       ),
+      errorWidget: (context, url, error) {
+        // Try fallback URL
+        final fallbackUrl = imageHelper.getFallbackUrl(book.id);
+        if (fallbackUrl != null && fallbackUrl != url) {
+          return CachedNetworkImage(
+            imageUrl: fallbackUrl,
+            fit: BoxFit.cover,
+            placeholder: (context, url) => Container(
+              color: Colors.grey[200],
+              child: const Center(
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+            errorWidget: (context, url, error) => Container(
+              color: Colors.grey[300],
+              child: const Icon(Icons.book, size: 50),
+            ),
+          );
+        }
+        return Container(
+          color: Colors.grey[300],
+          child: const Icon(Icons.book, size: 50),
+        );
+      },
     );
   }
 }

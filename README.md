@@ -2,7 +2,9 @@
 
 A Flutter application for searching and managing your favorite books via Google Books API.
 
+![Book Search Screenshot](screenshots/1.png)
 ![Book Search Screenshot](screenshots/image.png)
+![favourits Screenshot](screenshots/image.png)
 
 ## Features
 

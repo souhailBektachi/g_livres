@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import '../models/book.dart';
+import '../services/image_helper_service.dart';
 
 class BookListItem extends StatelessWidget {
   final Book book;
@@ -46,58 +48,10 @@ class BookListItem extends StatelessWidget {
                         blurRadius: 3,
                         offset: const Offset(0, 2),
                       ),
-                    ],
-                  ),
+                    ],                  ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: book.imageUrl != null
-                        ? Image.network(
-                            book.imageUrl!,
-                            width: 80,
-                            height: 120,
-                            fit: BoxFit.cover,
-                            loadingBuilder: (context, child, loadingProgress) {
-                              if (loadingProgress == null) return child;
-                              return Container(
-                                width: 80,
-                                height: 120,
-                                color: Colors.grey[200],
-                                child: Center(
-                                  child: CircularProgressIndicator(
-                                    value: loadingProgress.expectedTotalBytes != null
-                                        ? loadingProgress.cumulativeBytesLoaded /
-                                            loadingProgress.expectedTotalBytes!
-                                        : null,
-                                    strokeWidth: 2,
-                                  ),
-                                ),
-                              );
-                            },
-                            errorBuilder: (context, error, stackTrace) {
-                              return Container(
-                                width: 80,
-                                height: 120,
-                                color: Colors.grey[300],
-                                child: Center(
-                                  child: Icon(
-                                    Icons.book,
-                                    size: 40,
-                                    color: Theme.of(context).primaryColor.withOpacity(0.7),
-                                  ),
-                                ),
-                              );
-                            },
-                          )
-                        : Container(
-                            width: 80,
-                            height: 120,
-                            color: Colors.grey[300],
-                            child: Icon(
-                              Icons.book,
-                              size: 40,
-                              color: Theme.of(context).primaryColor.withOpacity(0.7),
-                            ),
-                          ),
+                    child: _buildBookCover(context),
                   ),
                 ),
               ),
@@ -166,8 +120,52 @@ class BookListItem extends StatelessWidget {
               ),
             ],
           ),
-        ),
+        ),      ),
+    );
+  }
+  Widget _buildBookCover(BuildContext context) {
+    final imageHelper = ImageHelperService();
+    final cleanUrl = imageHelper.cleanImageUrl(book.imageUrl);
+    
+    if (cleanUrl == null || cleanUrl.isEmpty) {
+      return imageHelper.buildPlaceholder(context, 80, 120);
+    }
+    
+    return CachedNetworkImage(
+      imageUrl: cleanUrl,
+      width: 80,
+      height: 120,
+      fit: BoxFit.cover,
+      placeholder: (context, url) => imageHelper.buildPlaceholder(
+        context, 
+        80, 
+        120, 
+        showLoader: true,
       ),
+      errorWidget: (context, url, error) {
+        // Try fallback URL
+        final fallbackUrl = imageHelper.getFallbackUrl(book.id);
+        if (fallbackUrl != null && fallbackUrl != url) {
+          return CachedNetworkImage(
+            imageUrl: fallbackUrl,
+            width: 80,
+            height: 120,
+            fit: BoxFit.cover,
+            placeholder: (context, url) => imageHelper.buildPlaceholder(
+              context, 
+              80, 
+              120, 
+              showLoader: true,
+            ),
+            errorWidget: (context, url, error) => imageHelper.buildPlaceholder(
+              context, 
+              80, 
+              120,
+            ),
+          );
+        }
+        return imageHelper.buildPlaceholder(context, 80, 120);
+      },
     );
   }
 }
